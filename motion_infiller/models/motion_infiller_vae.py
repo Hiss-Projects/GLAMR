@@ -1,19 +1,15 @@
-import torch
-import pytorch_lightning as pl
 import numpy as np
+import pytorch_lightning as pl
+import torch
 from torch import nn
-from torch.nn import functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
-from lib.models import RNN, MLP, PositionalEncoding
-from motion_infiller.models.loss_func import loss_func_dict
-from traj_pred.utils.config import Config as TrajPredConfig
-from traj_pred.models import model_dict as traj_model_dict
-from lib.utils.torch_utils import initialize_weights, ExtModuleWrapper
+
+from lib.models import MLP, PositionalEncoding
+from lib.models.smpl import SMPL, SMPL_MODEL_DIR
 from lib.utils.dist import Normal
 from lib.utils.torch_transform import angle_axis_to_rot6d, rot6d_to_angle_axis
-from lib.utils.tools import find_last_version, get_checkpoint_path
-from lib.models.smpl import SMPL, SMPL_MODEL_DIR
-
+from lib.utils.torch_utils import initialize_weights
+from motion_infiller.models.loss_func import loss_func_dict
 
 """ 
 Modules

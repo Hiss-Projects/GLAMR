@@ -1,31 +1,31 @@
-import os, sys
-sys.path.append(os.path.join(os.getcwd()))
-import os.path as osp
-import glob
-import torch
-import numpy as np
-import pickle
-import cv2 as cv
-import shutil
 import argparse
+import glob
+import os
+import os.path as osp
+import pickle
+
+import numpy as np
+import torch
+
+from avatarify_utils.glob import DATA_3DPW_DIR
+from global_recon.models import model_dict
+from global_recon.utils.config import Config
+from global_recon.vis.vis_cfg import demo_seq_render_specs as seq_render_specs
+from global_recon.vis.vis_grecon import GReconVisualizer
 from lib.utils.log_utils import create_logger
 from lib.utils.vis import get_video_num_fr, get_video_fps, hstack_video_arr, get_video_width_height, video_to_images
-from global_recon.utils.config import Config
-from global_recon.models import model_dict
-from global_recon.vis.vis_grecon import GReconVisualizer
-from global_recon.vis.vis_cfg import demo_seq_render_specs as seq_render_specs
 from pose_est.run_pose_est_demo import run_pose_est_on_video
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--cfg', default='glamr_static')
-parser.add_argument('--video_path', default='assets/static/basketball.mp4')
+# parser.add_argument('--video_path', default='assets/static/basketball.mp4')
+parser.add_argument('--video_path', default=f'{DATA_3DPW_DIR}/imageFiles/courtyard_basketball_00/basketball2.mp4')
 parser.add_argument('--out_dir', default='out/glamr_static/basketball')
 parser.add_argument('--pose_est_dir', default=None)
 parser.add_argument('--seed', type=int, default=1)
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--cached', type=int, default=1)
-parser.add_argument('--multi', action='store_true', default=False)
+parser.add_argument('--multi', action='store_true', default=True)
 parser.add_argument('--vis', action='store_true', default=False)
 parser.add_argument('--vis_cam', action='store_true', default=False)
 parser.add_argument('--save_video', action='store_true', default=False)
@@ -49,11 +49,12 @@ os.makedirs(render_path, exist_ok=True)
 if args.pose_est_dir is None:
     pose_est_dir = f'{args.out_dir}/pose_est'
     log.info(f"running {cfg.grecon_model_specs['est_type']} pose estimation on {args.video_path}...")
-    run_pose_est_on_video(args.video_path, pose_est_dir, cfg.grecon_model_specs['est_type'], cached_pose=cached, gpu_index=args.gpu, multi=args.multi)
+    if not os.path.exists(os.path.join(pose_est_dir, 'pose.pkl')):
+        run_pose_est_on_video(args.video_path, pose_est_dir, cfg.grecon_model_specs['est_type'], cached_pose=cached,
+                              gpu_index=args.gpu, multi=args.multi)
 else:
     pose_est_dir = args.pose_est_dir
 pose_est_model_name = {'hybrik': 'HybrIK'}[cfg.grecon_model_specs['est_type']]
-
 
 # global recon model
 grecon_model = model_dict[cfg.grecon_model_name](cfg, device, log)
@@ -96,7 +97,8 @@ if args.vis:
     else:
         render_specs = seq_render_specs.get(seq_name, seq_render_specs['default'])
         visualizer = GReconVisualizer(out_dict, coord='world', verbose=False, show_camera=True,
-                                      render_cam_pos=render_specs.get('cam_pos', None), render_cam_focus=render_specs.get('cam_focus', None))
+                                      render_cam_pos=render_specs.get('cam_pos', None),
+                                      render_cam_focus=render_specs.get('cam_focus', None))
         visualizer.show_animation(window_size=(1920, 1080))
 
 # save video
@@ -108,12 +110,16 @@ if args.save_video:
 
     log.info(f'saving world animation for {seq_name}')
     visualizer = GReconVisualizer(out_dict, coord='world', verbose=False, show_camera=False,
-                                  render_cam_pos=render_specs.get('cam_pos', None), render_cam_focus=render_specs.get('cam_focus', None))
-    visualizer.save_animation_as_video(video_world, window_size=render_specs.get('wsize', (int(1.5 * img_h), img_h)), cleanup=True, crf=5)
+                                  render_cam_pos=render_specs.get('cam_pos', None),
+                                  render_cam_focus=render_specs.get('cam_focus', None))
+    visualizer.save_animation_as_video(video_world, window_size=render_specs.get('wsize', (int(1.5 * img_h), img_h)),
+                                       cleanup=True, crf=5)
 
     log.info(f'saving cam animation for {seq_name}')
     visualizer = GReconVisualizer(out_dict, coord='cam_in_world', verbose=False, background_img_dir=frame_dir)
     visualizer.save_animation_as_video(video_cam, window_size=(img_w, img_h), cleanup=True)
 
     log.info(f'saving side-by-side animation for {seq_name}')
-    hstack_video_arr([pose_est_video, video_cam, video_world], video_sbs, text_arr=[pose_est_model_name, 'GLAMR (Cam)', 'GLAMR (World)'], text_color='blue', text_size=img_h // 16, verbose=False)
+    hstack_video_arr([pose_est_video, video_cam, video_world], video_sbs,
+                     text_arr=[pose_est_model_name, 'GLAMR (Cam)', 'GLAMR (World)'], text_color='blue',
+                     text_size=img_h // 16, verbose=False)

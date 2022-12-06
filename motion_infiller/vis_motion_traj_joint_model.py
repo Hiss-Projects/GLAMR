@@ -1,9 +1,7 @@
-import os, sys
-sys.path.append(os.path.join(os.getcwd()))
-import os.path as osp
+import os
+
 import argparse
 import torch
-import numpy as np
 from pytorch_lightning.utilities.seed import seed_everything
 from torch.utils.data import DataLoader
 from motion_infiller.data.amass_dataset import AMASSDataset
@@ -14,7 +12,6 @@ from lib.utils.tools import worker_init_fn
 from lib.utils.vis import hstack_videos
 from lib.utils.torch_utils import tensor_to
 from lib.utils.log_utils import create_logger
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--cfg', default='motion_traj_joint_model')
@@ -37,16 +34,16 @@ log = create_logger(f'{cfg.log_dir}/log.txt')
 if args.num_drop_fr is not None:
     cfg.data_mask_methods['drop_frames'] = {'min_drop_len': args.num_drop_fr, 'max_drop_len': args.num_drop_fr}
 
-
 # val datasets
-test_dataset = AMASSDataset(cfg.amass_dir, args.split, cfg, training=False, seq_len=cfg.seq_len, ntime_per_epoch=int(1e7))
+test_dataset = AMASSDataset(cfg.amass_dir, args.split, cfg, training=False, seq_len=cfg.seq_len,
+                            ntime_per_epoch=int(1e7))
 test_dataloader = DataLoader(test_dataset, batch_size=1, num_workers=0, pin_memory=True, worker_init_fn=worker_init_fn)
 
 model = MotionTrajJointModel(cfg, device, log)
 
 visualizer = SMPLVisualizer(generator_func=None, distance=7, device=device, verbose=False,
-                            sample_visible_alltime=True, show_smpl=args.vis_mode in {'smpl', 'all'}, show_skeleton=args.vis_mode in {'jpos', 'all'})
-
+                            sample_visible_alltime=True, show_smpl=args.vis_mode in {'smpl', 'all'},
+                            show_skeleton=args.vis_mode in {'jpos', 'all'})
 
 for i, batch in enumerate(test_dataloader):
     if i >= args.num_seq:
@@ -54,8 +51,9 @@ for i, batch in enumerate(test_dataloader):
     if i < args.start_ind:
         continue
     num_drop_fr = batch["num_drop_fr"][0]
-    print(f'{i}/{args.num_seq} seq_name: {batch["seq_name"][0]}, fr_start: {batch["fr_start"][0]} num_mask_fr: {num_drop_fr}')
-    
+    print(
+        f'{i}/{args.num_seq} seq_name: {batch["seq_name"][0]}, fr_start: {batch["fr_start"][0]} num_mask_fr: {num_drop_fr}')
+
     batch = tensor_to(batch, device)
     output = model.inference(batch, sample_num=cfg.num_motion_samp, recon=True)
 
@@ -70,22 +68,18 @@ for i, batch in enumerate(test_dataloader):
         visualizer.save_animation_as_video(
             vid_name % 'recon', init_args={'smpl_seq': output, 'mode': 'recon'}, window_size=(1500, 1500), cleanup=True
         )
-        hstack_videos(vid_name % 'recon', vid_name % 'gt', vid_name % 'sbs', verbose=False, text1='Recon', text2='GT', text_color='black')
+        hstack_videos(vid_name % 'recon', vid_name % 'gt', vid_name % 'sbs', verbose=False, text1='Recon', text2='GT',
+                      text_color='black')
         os.remove(vid_name % 'recon')
 
     if model.stochastic:
         # save sample
         visualizer.save_animation_as_video(
-            vid_name % 'sample', init_args={'smpl_seq': output, 'mode': 'sample'}, window_size=(1500, 1500), cleanup=True
+            vid_name % 'sample', init_args={'smpl_seq': output, 'mode': 'sample'}, window_size=(1500, 1500),
+            cleanup=True
         )
-        hstack_videos(vid_name % 'sample', vid_name % 'gt', vid_name % 'sample_sbs', verbose=False, text1='Sample', text2='GT', text_color='black')
+        hstack_videos(vid_name % 'sample', vid_name % 'gt', vid_name % 'sample_sbs', verbose=False, text1='Sample',
+                      text2='GT', text_color='black')
         os.remove(vid_name % 'sample')
 
     os.remove(vid_name % 'gt')
-    
-    
-    
-
-
-
-

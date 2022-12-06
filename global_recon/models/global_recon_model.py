@@ -1,18 +1,22 @@
 import time
-import os
-import torch
+
 import numpy as np
+import torch
 from scipy.interpolate import interp1d
+
+from global_recon.models.loss_func import loss_func_dict
 from lib.models.smpl import SMPL, SMPL_MODEL_DIR
 from lib.utils.geometry import perspective_projection
-from lib.utils.torch_utils import tensor_to, tensor_to_numpy
-from lib.utils.tools import get_eta_str, convert_sec_to_time
 from lib.utils.joints import get_joints_info
-from lib.utils.torch_transform import heading_to_vec, quat_mul, rotation_matrix_to_quaternion, angle_axis_to_quaternion, inverse_transform, make_transform, quat_angle_diff, rot6d_to_rotmat, rotmat_to_rot6d, transform_trans, transform_rot, quaternion_to_angle_axis, vec_to_heading
-from global_recon.models.loss_func import loss_func_dict
+from lib.utils.tools import get_eta_str, convert_sec_to_time
+from lib.utils.torch_transform import heading_to_vec, quat_mul, rotation_matrix_to_quaternion, angle_axis_to_quaternion, \
+    inverse_transform, make_transform, quat_angle_diff, rot6d_to_rotmat, rotmat_to_rot6d, transform_trans, \
+    transform_rot, quaternion_to_angle_axis, vec_to_heading
+from lib.utils.torch_utils import tensor_to, tensor_to_numpy
 from motion_infiller.models.motion_traj_joint_model import MotionTrajJointModel
 from motion_infiller.utils.config_motion_traj import Config as MotionTrajConfig
 from traj_pred.utils.traj_utils import traj_global2local_heading, traj_local2global_heading, interp_orient_q_sep_heading
+
 try:
     from sdf import SDFLoss
 except:
@@ -20,7 +24,6 @@ except:
 
 
 class GlobalReconOptimizer:
-
     def __init__(self, cfg, device=torch.device('cpu'), log=None):
         self.cfg = cfg
         self.specs = specs = cfg.grecon_model_specs
@@ -28,7 +31,7 @@ class GlobalReconOptimizer:
         self.log = log
 
         self.cur_iter = 0
-        
+
         self.smpl = SMPL(SMPL_MODEL_DIR, pose_type='body26fk', create_transl=False).to(device)
         self.use_gt = specs.get('use_gt', False)
         self.est_type = specs.get('est_type', 'hybrik')
@@ -77,13 +80,14 @@ class GlobalReconOptimizer:
         num_fr = len(in_dict['est'][0]['bboxes_dict']['exist'])
         cam_pose = torch.eye(4).repeat((num_fr, 1, 1)).float().to(self.device)
         cam_pose_inv = inverse_transform(cam_pose)
-        
+
         src_joint_info = get_joints_info("smpl")
         dst_joint_info = get_joints_info("body26fk")
         dst_dict = dict((v, k) for k, v in dst_joint_info.name.items())
         smpl_to_body26fk = np.array([(dst_dict[v], k) for k, v in src_joint_info.name.items() if v in dst_dict.keys()])
 
         if self.est_type == 'hybrik':
+            rm_idx = []
             for idx, pose_dict in in_dict['est'].items():
                 new_dict = dict()
                 new_dict['visible'] = visible = pose_dict['bboxes_dict']['exist'].copy()
@@ -93,13 +97,16 @@ class GlobalReconOptimizer:
                 new_dict['exist_frames'] = visible == 1
                 new_dict['exist_frames'][start:end] = True
                 new_dict['exist_len'] = end - start
+                if end - start <= 1:
+                    continue
                 new_dict['max_len'] = max_len = visible.shape[0]
                 new_dict['frames'] = np.arange(max_len)
                 new_dict['vis_frames'] = vis_frames = visible == 1
                 new_dict['invis_frames'] = invis_frames = visible == 0
                 new_dict['frame2ind'] = {f: i for i, f in enumerate(new_dict['frames'])}
                 new_dict['scale'] = None
-                smpl_pose_wroot = quaternion_to_angle_axis(torch.tensor(pose_dict[f'smpl_pose_quat_wroot'], device=self.device)).cpu().numpy()
+                smpl_pose_wroot = quaternion_to_angle_axis(
+                    torch.tensor(pose_dict[f'smpl_pose_quat_wroot'], device=self.device)).cpu().numpy()
                 new_dict['smpl_pose'] = smpl_pose_wroot[:, 1:].reshape(-1, 69)
                 if idx in in_dict['gt']:
                     new_dict['smpl_pose_gt'] = in_dict['gt'][idx]['pose'][:, 3:]
@@ -123,9 +130,11 @@ class GlobalReconOptimizer:
                         new_dict[key] = new_val
                     for key in ['smpl_pose', 'smpl_beta', 'root_trans_cam', 'smpl_orient_cam']:
                         vis_ind = np.where(visible)[0]
-                        f = interp1d(vis_ind.astype(np.float32), new_dict[key], axis=0, assume_sorted=True, fill_value="extrapolate")
-                        new_val = f(np.arange(max_len, dtype=np.float32))
-                        new_dict[key] = new_val
+                        if len(vis_ind) > 1:
+                            f = interp1d(vis_ind.astype(np.float32), new_dict[key], axis=0, assume_sorted=True,
+                                         fill_value="extrapolate")
+                            new_val = f(np.arange(max_len, dtype=np.float32))
+                            new_dict[key] = new_val
                 new_dict = tensor_to(new_dict, self.device)
                 if self.flag_filter_pose:
                     self.filter_pose(new_dict)
@@ -138,6 +147,8 @@ class GlobalReconOptimizer:
                 new_dict['smpl_pose_nofill'] = new_dict['smpl_pose'].clone()
                 new_dict['smpl_pose_nofill'][~new_dict['exist_frames']] = 0.0
                 person_data[idx] = new_dict
+            for idx in rm_idx:
+                del in_dict['est'][idx]
         else:
             raise ValueError(f'est_type {self.est_type} not supported')
 
@@ -145,26 +156,33 @@ class GlobalReconOptimizer:
         if self.flag_infer_motion_traj:
             for pose_dict in person_data.values():
                 if self.flag_opt_motion_latent:
-                    pose_dict['motion_latent'] = self.mt_model.get_motion_latent(seq_len=pose_dict['exist_len']).to(self.device)
+                    pose_dict['motion_latent'] = self.mt_model.get_motion_latent(seq_len=pose_dict['exist_len']).to(
+                        self.device)
                 if self.flag_opt_traj_latent:
-                    pose_dict['traj_latent'] = self.mt_model.get_traj_latent(seq_len=pose_dict['exist_len']).to(self.device)
+                    pose_dict['traj_latent'] = self.mt_model.get_traj_latent(seq_len=pose_dict['exist_len']).to(
+                        self.device)
                 self.infer_motion_traj(pose_dict)
-        
+
         if not (self.flag_infer_motion_traj and self.flag_pred_traj):
             for pose_dict in person_data.values():
                 self.init_default_traj(pose_dict)
 
         # base trans and rot
         for pose_dict in person_data.values():
-            pose_dict['person_transform_world'] = make_transform(pose_dict['smpl_orient_world'], pose_dict['root_trans_world'], rot_type='axis_angle')
-            pose_dict['person_transform_cam'] = make_transform(pose_dict['smpl_orient_cam'], pose_dict['root_trans_cam'], rot_type='axis_angle')
+            pose_dict['person_transform_world'] = make_transform(pose_dict['smpl_orient_world'],
+                                                                 pose_dict['root_trans_world'], rot_type='axis_angle')
+            pose_dict['person_transform_cam'] = make_transform(pose_dict['smpl_orient_cam'],
+                                                               pose_dict['root_trans_cam'], rot_type='axis_angle')
             pose_dict['person2cam'] = inverse_transform(pose_dict['person_transform_cam'])
 
         if self.flag_opt_traj:
             for pose_dict in person_data.values():
                 if self.flag_opt_person2cam_rot or self.flag_opt_person2cam_trans:
-                    pose_dict['person2cam_res_rot'] = torch.tensor([1., 0., 0., 0., 1., 0.], device=pose_dict['person2cam'].device).repeat((pose_dict['person2cam'].shape[0], 1))
-                    pose_dict['person2cam_res_trans'] = torch.zeros((pose_dict['person2cam'].shape[0], 3), device=pose_dict['person2cam'].device)
+                    pose_dict['person2cam_res_rot'] = torch.tensor([1., 0., 0., 0., 1., 0.],
+                                                                   device=pose_dict['person2cam'].device).repeat(
+                        (pose_dict['person2cam'].shape[0], 1))
+                    pose_dict['person2cam_res_trans'] = torch.zeros((pose_dict['person2cam'].shape[0], 3),
+                                                                    device=pose_dict['person2cam'].device)
                 pose_dict['smpl_orient_world_res'] = torch.zeros_like(new_dict['smpl_orient_world'])
                 pose_dict['root_trans_world_res'] = torch.zeros_like(new_dict['root_trans_world'])
             rel_transform_cam = {}
@@ -172,7 +190,9 @@ class GlobalReconOptimizer:
             for i in range(len(person_ids)):
                 for j in range(len(person_ids)):
                     if i != j:
-                        rel_transform_cam[(i, j)] = torch.matmul(inverse_transform(person_data[person_ids[i]]['person_transform_cam']), person_data[person_ids[j]]['person_transform_cam'])
+                        rel_transform_cam[(i, j)] = torch.matmul(
+                            inverse_transform(person_data[person_ids[i]]['person_transform_cam']),
+                            person_data[person_ids[j]]['person_transform_cam'])
 
             if self.flag_pred_traj:
                 for pose_dict in person_data.values():
@@ -186,7 +206,7 @@ class GlobalReconOptimizer:
                     else:
                         pose_dict['traj_local_heading'] = torch.zeros((1,), device=self.device)
                         pose_dict['traj_local_dheading'] = torch.zeros((exist_len - 1,), device=self.device)
-                        
+
                     pose_dict['traj_local_z'] = torch.zeros((exist_len,), device=self.device)
                     pose_dict['traj_local_rot'] = torch.zeros((exist_len, 6), device=self.device)
             else:
@@ -272,7 +292,8 @@ class GlobalReconOptimizer:
             local_rep = traj_global2local_heading(trans, orient_q_interp)
             for (start, end) in self.cam_fix_frames:
                 pose_dict['traj_local_pred'][start:end, -2:] = local_rep[pose_dict['exist_frames']][start:end, -2:]
-            trans_tp, orient_q_tp = traj_local2global_heading(pose_dict['traj_local_pred'], local_heading=not self.absolute_heading)
+            trans_tp, orient_q_tp = traj_local2global_heading(pose_dict['traj_local_pred'],
+                                                              local_heading=not self.absolute_heading)
             orient_tp = quaternion_to_angle_axis(orient_q_tp)
             exist_fr = pose_dict['exist_frames']
             pose_dict['smpl_orient_world_base'] = pose_dict['smpl_orient_world_base'].detach().clone()
@@ -281,12 +302,15 @@ class GlobalReconOptimizer:
             pose_dict['root_trans_world_base'][exist_fr] = trans_tp
             pose_dict['smpl_orient_world'] = pose_dict['smpl_orient_world_base'].clone()
             pose_dict['root_trans_world'] = pose_dict['root_trans_world_base'].clone()
-            pose_dict['person_transform_world'] = make_transform(pose_dict['smpl_orient_world'], pose_dict['root_trans_world'], rot_type='axis_angle')
+            pose_dict['person_transform_world'] = make_transform(pose_dict['smpl_orient_world'],
+                                                                 pose_dict['root_trans_world'], rot_type='axis_angle')
 
     def init_cam_pose(self, data, all_frames=False):
         cam_pose_inv_new = []
-        for pose_dict in data['person_data'].values(): 
-            cam_pose_inv_new.append(torch.matmul(pose_dict['person_transform_world'], pose_dict['person2cam']) * pose_dict['vis_frames'][:, None, None])
+        for pose_dict in data['person_data'].values():
+            cam_pose_inv_new.append(
+                torch.matmul(pose_dict['person_transform_world'], pose_dict['person2cam']) * pose_dict['vis_frames'][:,
+                                                                                             None, None])
         num_persons = data['fr_num_persons']
         ind = num_persons > 0
         start = torch.where(ind)[0][0]
@@ -304,13 +328,15 @@ class GlobalReconOptimizer:
         else:
             data['pose_infer_cam_pose_inv'][...] = data['pose_infer_cam_pose_inv'][[start]]
 
-        data['pose_infer_cam_pose_inv'][:, :3, :3] = rot6d_to_rotmat(rotmat_to_rot6d(data['pose_infer_cam_pose_inv'][:, :3, :3]))
+        data['pose_infer_cam_pose_inv'][:, :3, :3] = rot6d_to_rotmat(
+            rotmat_to_rot6d(data['pose_infer_cam_pose_inv'][:, :3, :3]))
         data['cam_pose_inv'] = data['pose_infer_cam_pose_inv']
         data['cam_pose'] = inverse_transform(data['cam_pose_inv'])
 
     def init_default_traj(self, pose_dict):
         pose_dict[f'root_trans_world_base'][:] = torch.tensor([0.0, 0.0, 0.8]).to(self.device)
-        pose_dict[f'smpl_orient_world_base'][:] = quaternion_to_angle_axis(torch.tensor([0.0, 0.0, 0.7071, 0.7071]).to(self.device))
+        pose_dict[f'smpl_orient_world_base'][:] = quaternion_to_angle_axis(
+            torch.tensor([0.0, 0.0, 0.7071, 0.7071]).to(self.device))
         pose_dict[f'root_trans_world'] = pose_dict[f'root_trans_world_base']
         pose_dict[f'smpl_orient_world'] = pose_dict[f'smpl_orient_world_base']
 
@@ -340,7 +366,8 @@ class GlobalReconOptimizer:
                 raise ValueError(f'unknown traj interp method: {self.traj_interp_method}!')
 
             pose_dict[f'root_trans_world'] = pose_dict[f'root_trans_world_base'] = trans
-            pose_dict[f'smpl_orient_world'] = pose_dict[f'smpl_orient_world_base'] = quaternion_to_angle_axis(orient_q_interp)
+            pose_dict[f'smpl_orient_world'] = pose_dict[f'smpl_orient_world_base'] = quaternion_to_angle_axis(
+                orient_q_interp)
 
     def infer_motion_traj(self, pose_dict):
         if self.mt_model is not None:
@@ -352,7 +379,7 @@ class GlobalReconOptimizer:
             if self.mt_model.traj_predictor is not None and self.mt_model.traj_predictor.in_joint_pos_only:
                 batch['shape'] = pose_dict['smpl_beta'][exist_fr].unsqueeze(0)
                 batch['scale'] = pose_dict['scale'][exist_fr].unsqueeze(0)
-                
+
             if self.flag_opt_motion_latent:
                 batch['in_motion_latent'] = pose_dict['motion_latent']
             if self.flag_opt_traj_latent:
@@ -406,11 +433,13 @@ class GlobalReconOptimizer:
 
         pose_dict['traj_local'][:, 2] += pose_dict['traj_local_z']
         if self.flag_opt_vis_local_rot:
-            pose_dict['traj_local'][pose_dict['vis_frames'], 3:-2] += pose_dict['traj_local_rot'][pose_dict['vis_frames']]
+            pose_dict['traj_local'][pose_dict['vis_frames'], 3:-2] += pose_dict['traj_local_rot'][
+                pose_dict['vis_frames']]
         else:
             pose_dict['traj_local'][:, 3:-2] += pose_dict['traj_local_rot']
 
-        trans_tp, orient_q_tp = traj_local2global_heading(pose_dict['traj_local'], local_heading=not self.absolute_heading)
+        trans_tp, orient_q_tp = traj_local2global_heading(pose_dict['traj_local'],
+                                                          local_heading=not self.absolute_heading)
         orient_tp = quaternion_to_angle_axis(orient_q_tp)
         pose_dict['smpl_orient_world_base'] = pose_dict['smpl_orient_world_base'].detach().clone()
         pose_dict['root_trans_world_base'] = pose_dict['root_trans_world_base'].detach().clone()
@@ -419,7 +448,7 @@ class GlobalReconOptimizer:
 
     def forward(self, data, opt_variables, opt_meta):
         torch.set_printoptions(sci_mode=False)
-        
+
         """ traj and pose computation """
         for pose_dict in data['person_data'].values():
             """ infill motion """
@@ -435,31 +464,35 @@ class GlobalReconOptimizer:
                         heading = torch.cumsum(d_heading, dim=0)
                         pose_dict['traj_local_pred'][..., -2:] = heading_to_vec(heading)
 
-
             """ predict trajectory """
             if self.flag_infer_motion_traj and self.flag_pred_traj:
                 self.get_pred_trajectory_base(pose_dict, opt_variables)
 
             if self.flag_opt_traj:
                 if 'world_res' in opt_variables:
-                    pose_dict[f'smpl_orient_world'] = pose_dict[f'smpl_orient_world_base'] + pose_dict[f'smpl_orient_world_res']
-                    pose_dict[f'root_trans_world'] = pose_dict[f'root_trans_world_base'] + pose_dict[f'root_trans_world_res']
+                    pose_dict[f'smpl_orient_world'] = pose_dict[f'smpl_orient_world_base'] + pose_dict[
+                        f'smpl_orient_world_res']
+                    pose_dict[f'root_trans_world'] = pose_dict[f'root_trans_world_base'] + pose_dict[
+                        f'root_trans_world_res']
                 else:
                     pose_dict[f'smpl_orient_world'] = pose_dict[f'smpl_orient_world_base']
                     pose_dict[f'root_trans_world'] = pose_dict[f'root_trans_world_base']
 
                 if 'world_dheading' in pose_dict:
                     world_dheading = pose_dict['world_dheading']
-                    world_dheading_aa = torch.cat((torch.zeros([world_dheading.shape[0], 2], device=self.device), world_dheading), dim=-1)
+                    world_dheading_aa = torch.cat(
+                        (torch.zeros([world_dheading.shape[0], 2], device=self.device), world_dheading), dim=-1)
                     world_dheading_q = angle_axis_to_quaternion(world_dheading_aa)
-                    orient_q = quat_mul(world_dheading_q, angle_axis_to_quaternion(pose_dict[f'smpl_orient_world_base']))
+                    orient_q = quat_mul(world_dheading_q,
+                                        angle_axis_to_quaternion(pose_dict[f'smpl_orient_world_base']))
                     pose_dict[f'smpl_orient_world'] = quaternion_to_angle_axis(orient_q)
                     pose_dict[f'root_trans_world'] = pose_dict[f'root_trans_world_base']
 
                 if 'world_dxy' in pose_dict:
                     pose_dict[f'root_trans_world'][:, :2] += pose_dict[f'world_dxy']
 
-            pose_dict['person_transform_world'] = make_transform(pose_dict['smpl_orient_world'], pose_dict['root_trans_world'], rot_type='axis_angle')
+            pose_dict['person_transform_world'] = make_transform(pose_dict['smpl_orient_world'],
+                                                                 pose_dict['root_trans_world'], rot_type='axis_angle')
 
         """ form camera parameters """
         if self.flag_opt_cam and opt_meta['stage'] != 'init':
@@ -472,12 +505,15 @@ class GlobalReconOptimizer:
                     data['cam_pose_inv'] = inverse_transform(data['cam_pose'])
             elif self.flag_opt_cam_from_person_pose:
                 cam_pose_inv_new = []
-                for pose_dict in data['person_data'].values(): 
+                for pose_dict in data['person_data'].values():
                     person2cam = pose_dict['person2cam']
                     if self.flag_opt_person2cam_rot or self.flag_opt_person2cam_trans:
-                        person2cam_res = make_transform(pose_dict['person2cam_res_rot'], pose_dict['person2cam_res_trans'], rot_type='6d')
+                        person2cam_res = make_transform(pose_dict['person2cam_res_rot'],
+                                                        pose_dict['person2cam_res_trans'], rot_type='6d')
                         person2cam = torch.matmul(pose_dict['person2cam'], person2cam_res)
-                    cam_pose_inv_new.append(torch.matmul(pose_dict['person_transform_world'], person2cam) * pose_dict['vis_frames'][:, None, None])
+                    cam_pose_inv_new.append(
+                        torch.matmul(pose_dict['person_transform_world'], person2cam) * pose_dict['vis_frames'][:, None,
+                                                                                        None])
                 num_persons = data['fr_num_persons']
                 ind = num_persons > 0
                 data['cam_pose_inv'] = torch.zeros_like(data['cam_pose'])
@@ -489,16 +525,16 @@ class GlobalReconOptimizer:
                     else:
                         last_cam = data['cam_pose_inv'][i]
                 cam_rot_6d = rotmat_to_rot6d(data['cam_pose_inv'][:, :3, :3])
-                cam_rot_6d[num_persons == 0] += data['cam_inv_rot_residual']       
+                cam_rot_6d[num_persons == 0] += data['cam_inv_rot_residual']
                 data['cam_pose_inv'][:, :3, :3] = rot6d_to_rotmat(cam_rot_6d)
 
                 if self.flag_cam_inv_trans_res_all:
                     data['cam_pose_inv'][:, :3, 3] += data['cam_inv_trans_residual']
                 else:
                     data['cam_pose_inv'][num_persons == 0, :3, 3] += data['cam_inv_trans_residual']
-                
+
                 data['cam_pose'] = inverse_transform(data['cam_pose_inv'])
-        
+
         """ mesh and pose related computation """
         for pose_dict in data['person_data'].values():
             pose_dict['smpl_orient_cam_in_world'] = transform_rot(data['cam_pose'], pose_dict['smpl_orient_world'])
@@ -510,8 +546,8 @@ class GlobalReconOptimizer:
                     global_orient=pose_dict[f'smpl_orient_world'],
                     body_pose=pose_dict['smpl_pose'],
                     betas=pose_dict['smpl_beta'],
-                    root_trans = pose_dict[f'root_trans_world'],
-                    root_scale = pose_dict['scale'] if pose_dict['scale'] is not None else None,
+                    root_trans=pose_dict[f'root_trans_world'],
+                    root_scale=pose_dict['scale'] if pose_dict['scale'] is not None else None,
                     return_full_pose=True
                 )
                 joint_3d = smpl_motion.joints
@@ -553,7 +589,9 @@ class GlobalReconOptimizer:
             self.cur_iter = cur_iter
             if optimizer is not None:
                 optimizer.step(closure)
-            self.write_logs(loss_uw_dict, meta={'stage': opt_meta['stage'], 't_start': t_start, 'cur_iter': cur_iter, 'opt_niters': opt_niters, 'opt_lr': opt_lr, 'seq_name': data['seq_name']})
+            self.write_logs(loss_uw_dict, meta={'stage': opt_meta['stage'], 't_start': t_start, 'cur_iter': cur_iter,
+                                                'opt_niters': opt_niters, 'opt_lr': opt_lr,
+                                                'seq_name': data['seq_name']})
 
         for param in param_list:
             param.requires_grad_(False)
@@ -596,7 +634,7 @@ class GlobalReconOptimizer:
                 data['cam_trans'] = data['cam_pose'][:, :3, 3].clone().detach()
                 param_list.append(data['cam_rot_6d'])
                 param_list.append(data['cam_trans'])
-                
+
         for pose_dict in data['person_data'].values():
             if self.flag_opt_traj:
                 for key in opt_variables:
@@ -634,7 +672,7 @@ class GlobalReconOptimizer:
             optimizer = torch.optim.Adam(param_list, lr=opt_lr, betas=(0.9, 0.999))
             # optimizer = torch.optim.LBFGS(param_list, lr=opt_lr, max_iter=1)
         return optimizer, param_list
-    
+
     def write_logs(self, loss_dict, meta):
         metrics_to_ignore = {}
         cur_iter = meta['cur_iter']
@@ -649,4 +687,3 @@ class GlobalReconOptimizer:
             print(info_str)
         else:
             self.log.info(info_str)
-            

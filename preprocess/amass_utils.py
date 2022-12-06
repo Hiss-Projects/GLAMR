@@ -4,18 +4,15 @@ import os.path as osp
 import torch
 from tqdm import tqdm
 
-
-
 joints_to_use = np.array([
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     11, 12, 13, 14, 15, 16, 17, 18, 19,
     20, 21, 22, 37
 ])
-joints_to_use = np.arange(0,156).reshape((-1,3))[joints_to_use].reshape(-1)
+joints_to_use = np.arange(0, 156).reshape((-1, 3))[joints_to_use].reshape(-1)
 
 
 def read_data(folder, sequences, fps=30, smpl=None, device=torch.device('cpu')):
-
     theta_dict = {}
     joint_pos_dict = {}
 
@@ -28,7 +25,6 @@ def read_data(folder, sequences, fps=30, smpl=None, device=torch.device('cpu')):
     return theta_dict, joint_pos_dict
 
 
-
 def read_sequence(folder, seq_name, theta_dict, joint_pos_dict, fps, smpl, device):
     subjects = list(filter(lambda x: osp.isdir(os.path.join(folder, x)), os.listdir(folder)))
 
@@ -37,10 +33,10 @@ def read_sequence(folder, seq_name, theta_dict, joint_pos_dict, fps, smpl, devic
 
         for action in actions:
             fname = osp.join(folder, subject, action)
-            
+
             if fname.endswith('shape.npz'):
                 continue
-                
+
             data = np.load(fname)
             mocap_framerate = int(data['mocap_framerate'])
             sampling_freq = mocap_framerate // fps
@@ -56,7 +52,7 @@ def read_sequence(folder, seq_name, theta_dict, joint_pos_dict, fps, smpl, devic
                 global_orient=torch.zeros((pose.shape[0], 3), device=device, dtype=torch.float32),
                 body_pose=torch.tensor(pose[:, 3:], device=device, dtype=torch.float32),
                 betas=torch.tensor(shape, device=device, dtype=torch.float32),
-                root_trans = torch.zeros((pose.shape[0], 3), device=device, dtype=torch.float32),
+                root_trans=torch.zeros((pose.shape[0], 3), device=device, dtype=torch.float32),
                 orig_joints=True
             ).joints.cpu().numpy()
 
@@ -64,7 +60,7 @@ def read_sequence(folder, seq_name, theta_dict, joint_pos_dict, fps, smpl, devic
                 global_orient=torch.zeros((pose.shape[0], 3), device=device, dtype=torch.float32),
                 body_pose=torch.tensor(pose[:, 3:], device=device, dtype=torch.float32),
                 betas=torch.zeros((pose.shape[0], 10), device=device, dtype=torch.float32),
-                root_trans = torch.zeros((pose.shape[0], 3), device=device, dtype=torch.float32),
+                root_trans=torch.zeros((pose.shape[0], 3), device=device, dtype=torch.float32),
                 orig_joints=True
             ).joints.cpu().numpy()
 
@@ -75,3 +71,13 @@ def read_sequence(folder, seq_name, theta_dict, joint_pos_dict, fps, smpl, devic
             joint_pos_dict[vid_name] = (joint_pos, joint_pos_noshape)
 
     return
+
+
+if __name__ == '__main__':
+    from lib.models.smpl import SMPL, SMPL_MODEL_DIR
+
+    smpl = SMPL(SMPL_MODEL_DIR, pose_type='body26fk', create_transl=False).to('cuda')
+
+    amass_dir = '/home/achariso/PycharmProjects/Hiss-Projects/Avatarify/data/AMASS'
+    theta_data, jpos_data = read_data(amass_dir, sequences=['ACCAD'], smpl=smpl, device='cuda')
+    print(theta_data)

@@ -123,9 +123,9 @@ if opt.multi:
     # load multi-person tracking model
     mot = MPT(
         device=device,
-        batch_size=32,
+        batch_size=8,
         display=False,
-        detector_type='yolo',
+        detector_type='maskrcnn',
         output_format='dict',
         yolo_img_size=416,
     )

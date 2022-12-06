@@ -1,4 +1,7 @@
 import os, sys
+
+from avatarify_utils.glob import GLAMR_DIR, HYBRIK_DIR
+
 sys.path.append(os.path.join(os.getcwd()))
 import os.path as osp
 import subprocess
@@ -18,14 +21,14 @@ def run_pose_est_on_video(video_file, output_dir, pose_est_model, image_dir=None
         video_to_images(video_file, image_folder, fps=30)
     else:
         image_folder = image_dir
-    conda_path = os.environ["CONDA_PREFIX"].split('/envs')[0]
+
 
     if pose_est_model == 'hybrik':
         if bbox_file is None:
-            cmd = f'{conda_path}/envs/hybrik/bin/python ../pose_est/hybrik_demo/demo.py --img_folder {osp.abspath(image_folder)} --out_dir {osp.abspath(output_dir)} --gpu {gpu_index} --multi {1 if multi else 0}'
+            cmd = f'{sys.executable} {GLAMR_DIR}/pose_est/hybrik_demo/demo.py --img_folder {osp.abspath(image_folder)} --out_dir {osp.abspath(output_dir)} --gpu {gpu_index} --multi {1 if multi else 0}'
         else:
-            cmd = f'{conda_path}/envs/hybrik/bin/python ../pose_est/hybrik_demo/demo_dataset.py --img_folder {osp.abspath(image_folder)} --out_dir {osp.abspath(output_dir)} --bbox_file {osp.abspath(bbox_file)} --gpu {gpu_index}'
-        subprocess.run(cmd.split(' '), cwd='./HybrIK')
+            cmd = f'{sys.executable} {GLAMR_DIR}/pose_est/hybrik_demo/demo_dataset.py --img_folder {osp.abspath(image_folder)} --out_dir {osp.abspath(output_dir)} --bbox_file {osp.abspath(bbox_file)} --gpu {gpu_index}'
+        subprocess.run(cmd.split(' '), cwd=HYBRIK_DIR, check=True)
 
 
 if __name__ == "__main__":
