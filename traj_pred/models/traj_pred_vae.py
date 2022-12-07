@@ -361,7 +361,7 @@ class TrajPredVAE(pl.LightningModule):
         self.seq_len = self.cfg.seq_len
         self.joint_dropout = specs.get('joint_dropout', 0.0)
         self.joint_from_inpose = specs.get('joint_from_inpose', False)
-        self.in_joint_pos_only = specs.get('in_joint_pos_only', True)
+        self.in_joint_pos_only = specs.get('in_joint_pos_only', False)
         self.ctx = {
             'root_model': self,
             'nz': self.nz,

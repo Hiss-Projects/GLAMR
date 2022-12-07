@@ -589,10 +589,9 @@ class GlobalReconOptimizer:
             self.cur_iter = cur_iter
             if optimizer is not None:
                 optimizer.step(closure)
-            if self.log is not None:
-                self.write_logs(loss_uw_dict, meta={'stage': opt_meta['stage'], 't_start': t_start, 'cur_iter': cur_iter,
-                                                    'opt_niters': opt_niters, 'opt_lr': opt_lr,
-                                                    'seq_name': data['seq_name']})
+            self.write_logs(loss_uw_dict, meta={'stage': opt_meta['stage'], 't_start': t_start, 'cur_iter': cur_iter,
+                                                'opt_niters': opt_niters, 'opt_lr': opt_lr,
+                                                'seq_name': data['seq_name']})
 
         for param in param_list:
             param.requires_grad_(False)
