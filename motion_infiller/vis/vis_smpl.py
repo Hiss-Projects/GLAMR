@@ -1,4 +1,8 @@
 import os, sys
+
+import pywavefront
+from cv2 import cv2
+
 sys.path.append(os.path.join(os.getcwd()))
 import pyvista
 import time
@@ -10,7 +14,56 @@ from motion_infiller.data.amass_dataset import AMASSDataset
 from torch.utils.data import DataLoader
 from pyvista.plotting.tools import parse_color
 from vtk import vtkTransform
-from lib.utils.torch_transform import quat_apply, quat_between_two_vec, quaternion_to_angle_axis, angle_axis_to_quaternion
+from lib.utils.torch_transform import quat_apply, quat_between_two_vec, quaternion_to_angle_axis, \
+    angle_axis_to_quaternion
+
+
+class OBJ:
+    def __init__(self, filename, swapyz=False):
+        """Loads a Wavefront OBJ file. """
+        self.vertices = []
+        self.normals = []
+        self.texcoords = []
+        self.faces = []
+
+        material = None
+        for line in open(filename, "r"):
+            if line.startswith('#'): continue
+            values = line.split()
+            if not values: continue
+            if values[0] == 'v':
+                v = map(float, values[1:4])
+                if swapyz:
+                    v = v[0], v[2], v[1]
+                self.vertices.append(v)
+            elif values[0] == 'vn':
+                v = map(float, values[1:4])
+                if swapyz:
+                    v = v[0], v[2], v[1]
+                self.normals.append(v)
+            elif values[0] == 'vt':
+                self.texcoords.append(map(float, values[1:3]))
+            elif values[0] in ('usemtl', 'usemat'):
+                material = values[1]
+            elif values[0] == 'mtllib':
+                # self.mtl = MTL(values[1])
+                ...
+            elif values[0] == 'f':
+                face = []
+                texcoords = []
+                norms = []
+                for v in values[1:]:
+                    w = v.split('/')
+                    face.append(int(w[0]))
+                    if len(w) >= 2 and len(w[1]) > 0:
+                        texcoords.append(int(w[1]))
+                    else:
+                        texcoords.append(0)
+                    if len(w) >= 3 and len(w[2]) > 0:
+                        norms.append(int(w[2]))
+                    else:
+                        norms.append(0)
+                self.faces.append((face, norms, texcoords, material))
 
 
 class SMPLActor():
@@ -20,7 +73,14 @@ class SMPLActor():
         self.verts = verts
         self.face = faces
         self.mesh = pyvista.PolyData(verts, faces)
-        self.actor = self.pl.add_mesh(self.mesh, color=color, pbr=True, metallic=0.0, roughness=0.3, diffuse=1)
+        self.tex_np = cv2.imread('/home/achariso/PycharmProjects/Hiss-Projects/Avatarify/deps/HybrIK/model_files/smpl_uv_20200910.png')[...,::-1]
+        self.tex = pyvista.numpy_to_texture(self.tex_np)
+
+        self.smpl_obj = OBJ('/home/achariso/PycharmProjects/Hiss-Projects/Avatarify/deps/HybrIK/model_files/smpl_uv.obj')
+        self.mesh.active_t_coords = np.array([list(_) for _ in self.smpl_obj.texcoords])[:6890]
+
+        self.actor = self.pl.add_mesh(self.mesh, color=color, pbr=True, metallic=0.0, roughness=0.3, diffuse=1,
+                                      texture=self.tex)
         # self.actor = self.pl.add_mesh(self.mesh, color=color, ambient=0.2, diffuse=0.8, specular=0.8, specular_power=5, smooth_shading=True)
         self.set_visibility(visible)
 
@@ -41,7 +101,8 @@ class SMPLActor():
 
 class SkeletonActor():
 
-    def __init__(self, pl, joint_parents, joint_color='green', bone_color='yellow', joint_radius=0.03, bone_radius=0.02, visible=True):
+    def __init__(self, pl, joint_parents, joint_color='green', bone_color='yellow', joint_radius=0.03, bone_radius=0.02,
+                 visible=True):
         self.pl = pl
         self.joint_parents = joint_parents
         self.joint_meshes = []
@@ -53,14 +114,16 @@ class SkeletonActor():
             # joint
             joint_mesh = pyvista.Sphere(radius=joint_radius, center=(0, 0, 0), theta_resolution=10, phi_resolution=10)
             # joint_actor = self.pl.add_mesh(joint_mesh, color=joint_color, pbr=True, metallic=0.0, roughness=0.3, diffuse=1)
-            joint_actor = self.pl.add_mesh(joint_mesh, color=joint_color, ambient=0.3, diffuse=0.5, specular=0.8, specular_power=5, smooth_shading=True)
+            joint_actor = self.pl.add_mesh(joint_mesh, color=joint_color, ambient=0.3, diffuse=0.5, specular=0.8,
+                                           specular_power=5, smooth_shading=True)
             self.joint_meshes.append(joint_mesh)
             self.joint_actors.append(joint_actor)
             # bone
             if pa >= 0:
                 bone_mesh = pyvista.Cylinder(radius=bone_radius, center=(0, 0, 0), direction=(0, 0, 1), resolution=30)
                 # bone_actor = self.pl.add_mesh(bone_mesh, color=bone_color, pbr=True, metallic=0.0, roughness=0.3, diffuse=1)
-                bone_actor = self.pl.add_mesh(bone_mesh, color=bone_color, ambient=0.3, diffuse=0.5, specular=0.8, specular_power=5, smooth_shading=True)
+                bone_actor = self.pl.add_mesh(bone_mesh, color=bone_color, ambient=0.3, diffuse=0.5, specular=0.8,
+                                              specular_power=5, smooth_shading=True)
                 self.bone_meshes.append(bone_mesh)
                 self.bone_actors.append(bone_actor)
                 self.bone_pairs.append((j, pa))
@@ -82,7 +145,7 @@ class SkeletonActor():
         aa = quaternion_to_angle_axis(quat_between_two_vec(torch.tensor([0., 0., 1.]).expand_as(vec), vec)).numpy()
         angle = np.linalg.norm(aa, axis=-1, keepdims=True)
         axis = aa / (angle + 1e-6)
-        
+
         for actor, (j, pa), angle_i, axis_i, dist_i in zip(self.bone_actors, self.bone_pairs, angle, axis, dist):
             trans = vtkTransform()
             trans.Translate(*(jpos[pa] + jpos[j]) * 0.5)
@@ -110,22 +173,22 @@ class SkeletonActor():
             actor.GetProperty().SetColor(rgb_color)
 
 
-
 class SMPLVisualizer(Visualizer3D):
 
-    def __init__(self, generator_func=None, device=torch.device('cpu'), show_smpl=True, show_skeleton=False, sample_visible_alltime=False, **kwargs):
+    def __init__(self, generator_func=None, device=torch.device('cpu'), show_smpl=True, show_skeleton=False,
+                 sample_visible_alltime=False, **kwargs):
         super().__init__(**kwargs)
         self.show_smpl = show_smpl
         self.show_skeleton = show_skeleton
         self.smpl = SMPL(SMPL_MODEL_DIR, pose_type='body26fk', create_transl=False).to(device)
-        faces = self.smpl.faces.copy()       
+        faces = self.smpl.faces.copy()
         self.smpl_faces = faces = np.hstack([np.ones_like(faces[:, [0]]) * 3, faces])
         self.smpl_joint_parents = self.smpl.parents.cpu().numpy()
         self.generator_func = generator_func
         self.smpl_motion_generator = None
         self.device = device
         self.sample_visible_alltime = sample_visible_alltime
-        
+
     def update_smpl_seq(self, smpl_seq=None, mode='gt'):
         if smpl_seq is None:
             try:
@@ -160,21 +223,21 @@ class SMPLVisualizer(Visualizer3D):
                 trans = trans.squeeze(0)
 
             shape = smpl_seq['shape'].repeat((pose.shape[0], 1, 1))
-            
+
             # print(pose[..., :3].view(-1, 3))
             orig_pose_shape = pose.shape
             self.smpl_motion = self.smpl(
                 global_orient=pose[..., :3].view(-1, 3),
                 body_pose=pose[..., 3:].view(-1, 69),
-                betas=torch.zeros_like(shape.view(-1, 10)),     # TODO
-                root_trans = trans.view(-1, 3),
+                betas=torch.zeros_like(shape.view(-1, 10)),  # TODO
+                root_trans=trans.view(-1, 3),
                 return_full_pose=True,
                 orig_joints=True
             )
 
             self.smpl_verts = self.smpl_motion.vertices.reshape(*orig_pose_shape[:-1], -1, 3)
             self.smpl_joints = self.smpl_motion.joints.reshape(*orig_pose_shape[:-1], -1, 3)
-        
+
         if f'{key}joint_pos' in smpl_seq:
             print(f'use {mode} joint pos')
             joints = smpl_seq[f'{key}joint_pos']
@@ -185,7 +248,7 @@ class SMPLVisualizer(Visualizer3D):
                 trans = smpl_seq[f'{key}trans']
             else:
                 trans = smpl_seq['trans'].repeat((joints.shape[0], 1, 1))
-            
+
             if f'{key}orient' in smpl_seq:
                 orient = smpl_seq[f'{key}orient']
             else:
@@ -220,7 +283,7 @@ class SMPLVisualizer(Visualizer3D):
             self.smpl_actors = [SMPLActor(self.pl, vertices, self.smpl_faces) for _ in range(self.num_actors)]
         if self.show_skeleton:
             self.skeleton_actors = [SkeletonActor(self.pl, self.smpl_joint_parents) for _ in range(self.num_actors)]
-        
+
     def update_camera(self, interactive):
         root_pos = self.smpl_joints[0, self.fr, 0].cpu().numpy()
         roll = self.pl.camera.roll
@@ -239,13 +302,13 @@ class SMPLVisualizer(Visualizer3D):
 
         if self.show_smpl and self.smpl_verts is not None:
             if all_visible:
-                full_opacity = 0.5 
+                full_opacity = 0.5
             elif self.show_skeleton or self.num_actors > 1:
                 full_opacity = 0.7
             else:
                 full_opacity = 1.0
             opacity = full_opacity if visible else 0.5
-            
+
             for i, actor in enumerate(self.smpl_actors):
                 if visible and i > 0 and not self.sample_visible_alltime:
                     actor.set_visibility(False)
@@ -256,7 +319,7 @@ class SMPLVisualizer(Visualizer3D):
 
         if self.show_skeleton:
             if all_visible:
-                full_opacity = 0.5 
+                full_opacity = 0.5
             elif self.show_skeleton or self.num_actors > 1:
                 full_opacity = 0.7
             else:

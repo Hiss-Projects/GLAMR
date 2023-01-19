@@ -34,21 +34,21 @@ amass_splits = {
         'BMLmovi',
         'BioMotionLab_NTroje',
         'CMU',
-        'DanceDB',
-        'DFaust_67',
-        'EKUT',
-        'Eyes_Japan_Dataset',
-        'KIT',
-        'MPI_HDM05',
-        'MPI_Limits',
-        'MPI_mosh',
-        'SFU',
-        'TCD_handMocap',
-        'TotalCapture'
+        # 'DanceDB',
+        # 'DFaust_67',
+        # 'EKUT',
+        # 'Eyes_Japan_Dataset',
+        # 'KIT',
+        # 'MPI_HDM05',
+        # 'MPI_Limits',
+        # 'MPI_mosh',
+        # 'SFU',
+        # 'TCD_handMocap',
+        # 'TotalCapture'
     ],
     'test': [
-        'Transitions_mocap',
-        'SSM_synced',
+        # 'Transitions_mocap',
+        # 'SSM_synced',
         'HumanEva'
     ]
 }
